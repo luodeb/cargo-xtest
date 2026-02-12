@@ -1,2 +1,2 @@
 [xconfig]
-smp = true
+smp = false

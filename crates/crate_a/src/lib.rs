@@ -1,9 +1,9 @@
 pub fn crate_a_main() {
-    #[cfg(xconfig = "smp")]
+    #[cfg(SMP)]
     crate_b::crate_b_main();
 
-    #[cfg(xconfig = "smp")]
+    #[cfg(SMP)]
     println!("Crate A (smp)");
-    #[cfg(not(xconfig = "smp"))]
+    #[cfg(not(SMP))]
     println!("Crate A (unsmp)");
 }

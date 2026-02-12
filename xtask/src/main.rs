@@ -1,196 +1,202 @@
+mod config;
+mod resolve;
+mod types;
+mod wrapper;
+
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::collections::{HashMap, HashSet};
+use std::process::{Command, Stdio};
 
-// ── Config types ─────────────────────────────────────────────────────
+use config::project_root;
+use types::{CargoMessage, DepSource, ExternDep};
 
-/// `.config.toml` schema
-#[derive(Deserialize)]
-struct ProjectConfig {
-    xconfig: Option<HashMap<String, bool>>,
-}
-
-/// Partial `Cargo.toml` schema – only the fields we care about.
-#[derive(Deserialize)]
-struct CargoToml {
-    package: Option<Package>,
-}
-
-#[derive(Deserialize)]
-struct Package {
-    #[allow(dead_code)]
-    name: Option<String>,
-    metadata: Option<Metadata>,
-}
-
-#[derive(Deserialize)]
-struct Metadata {
-    xconfig: Option<HashMap<String, Vec<String>>>,
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-fn project_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask must live inside a subdirectory of the project root")
-        .to_path_buf()
-}
-
-/// Scan a single `Cargo.toml` for `[package.metadata.xconfig]` and
-/// populate `feature_map` (crate_name → Vec<feature_name>).
-fn collect_xconfig_metadata(
-    cargo_toml: &Path,
-    active: &[String],
-    feature_map: &mut HashMap<String, Vec<String>>,
-) -> Result<()> {
-    let content = std::fs::read_to_string(cargo_toml)?;
-    let parsed: CargoToml =
-        toml::from_str(&content).with_context(|| format!("parse {}", cargo_toml.display()))?;
-
-    let xconfig = parsed
-        .package
-        .and_then(|p| p.metadata)
-        .and_then(|m| m.xconfig);
-
-    if let Some(xconfig) = xconfig {
-        for key in active {
-            if let Some(feat_specs) = xconfig.get(key) {
-                for spec in feat_specs {
-                    // spec = "crate_name/feature_name"
-                    if let Some((crate_name, feature)) = spec.split_once('/') {
-                        feature_map
-                            .entry(crate_name.to_string())
-                            .or_default()
-                            .push(feature.to_string());
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-// ── Wrapper mode (RUSTC_WRAPPER) ─────────────────────────────────────
-//
-// Invoked by cargo as:  <wrapper> <rustc> [rustc-args …]
-//
-// Global `--cfg xconfig="…"` flags are delivered through RUSTFLAGS so
-// that cargo can track them for cache invalidation.  The wrapper ONLY
-// handles per-crate feature injection via the XCONFIG_FEATURES env var.
-//   XCONFIG_FEATURES = crate_b:smp,feat2;crate_c:other
-
-fn wrapper_main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let rustc = &args[1];
-    let rustc_args = &args[2..];
-
-    let mut cmd = Command::new(rustc);
-    cmd.args(rustc_args);
-
-    // Which crate is being compiled?
-    let crate_name = rustc_args
-        .windows(2)
-        .find(|w| w[0] == "--crate-name")
-        .map(|w| w[1].as_str());
-
-    // Inject --cfg feature="…" only for the targeted crate
-    if let (Some(name), Ok(feat_env)) = (crate_name, std::env::var("XCONFIG_FEATURES")) {
-        for entry in feat_env.split(';').filter(|s| !s.is_empty()) {
-            if let Some((cn, feats)) = entry.split_once(':') {
-                if cn == name {
-                    for f in feats.split(',').filter(|s| !s.is_empty()) {
-                        cmd.arg("--cfg").arg(format!("feature=\"{f}\""));
-                    }
-                }
-            }
-        }
-    }
-
-    let status = cmd.status().context("failed to execute rustc")?;
-    std::process::exit(status.code().unwrap_or(1));
-}
-
-// ── xtask mode (orchestrator) ────────────────────────────────────────
+// ── Orchestrator ─────────────────────────────────────────────────────
 
 fn xtask_main() -> Result<()> {
     let root = project_root();
     let cargo_args: Vec<String> = std::env::args().skip(1).collect();
 
     // 1. Read .config.toml
-    let config_path = root.join(".config.toml");
-    let config_str = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("read {}", config_path.display()))?;
-    let config: ProjectConfig = toml::from_str(&config_str).context("parse .config.toml")?;
-
-    let active: Vec<String> = config
-        .xconfig
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(_, enabled)| *enabled)
-        .map(|(k, _)| k)
-        .collect();
-
+    let (active, all_keys) = config::load_active_xconfigs(&root)?;
     eprintln!("[xtask] active xconfigs: {active:?}");
 
-    // 2. Scan every crate's Cargo.toml for [package.metadata.xconfig]
-    let mut feature_map: HashMap<String, Vec<String>> = HashMap::new();
+    // 1b. Sync .cargo/config.toml for rust-analyzer
+    config::sync_cargo_config(&root, &active, &all_keys)?;
 
-    // crates/ subdirectories
-    let crates_dir = root.join("crates");
-    if crates_dir.is_dir() {
-        for entry in std::fs::read_dir(&crates_dir)? {
-            let path = entry?.path();
-            let toml_path = path.join("Cargo.toml");
-            if toml_path.exists() {
-                collect_xconfig_metadata(&toml_path, &active, &mut feature_map)?;
+    // 2. Collect [package.metadata.xconfig] → feature_map
+    let feature_map = config::collect_all_metadata(&root, &active)?;
+    eprintln!("[xtask] feature injection: {feature_map:?}");
+
+    // 3. Auto-resolve extern injection
+    let extern_map = resolve::resolve_extern_map(&root, &feature_map)?;
+
+    eprintln!("[xtask] extern injection (auto-resolved): {extern_map:?}");
+
+    // Collect all unique ExternDeps we need rlibs for
+    let all_extern_deps: Vec<ExternDep> = extern_map
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let needed_externs: Vec<String> = all_extern_deps
+        .iter()
+        .map(|d| d.crate_name.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // 4. Phase 1: auto-generate xdeps/Cargo.toml and build it
+    let mut rlib_paths: HashMap<String, String> = HashMap::new();
+
+    if !needed_externs.is_empty() {
+        // Generate target/xdeps/Cargo.toml from resolved deps
+        let xdeps_dir = root.join("target").join("xdeps");
+        std::fs::create_dir_all(xdeps_dir.join("src"))?;
+
+        // Deduplicate by pkg_name
+        let mut seen = HashSet::new();
+        let mut dep_lines = Vec::new();
+        for dep in &all_extern_deps {
+            if seen.insert(dep.pkg_name.clone()) {
+                let spec = match &dep.source {
+                    DepSource::Git(url) => format!("{} = {{ git = \"{}\" }}", dep.pkg_name, url),
+                    DepSource::Path(p) => format!("{} = {{ path = \"{}\" }}", dep.pkg_name, p),
+                    DepSource::Registry => format!("{} = \"*\"", dep.pkg_name),
+                };
+                dep_lines.push(spec);
             }
         }
-    }
+        dep_lines.sort();
 
-    // top-level crate directories (entry, etc.)
-    for name in ["entry"] {
-        let toml_path = root.join(name).join("Cargo.toml");
-        if toml_path.exists() {
-            collect_xconfig_metadata(&toml_path, &active, &mut feature_map)?;
+        let xdeps_toml = format!(
+            "# AUTO-GENERATED by xtask — do not edit manually\n\
+             [workspace]\n\
+             \n\
+             [package]\n\
+             name = \"xdeps\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             \n\
+             [dependencies]\n\
+             {}\n",
+            dep_lines.join("\n")
+        );
+
+        let xdeps_toml_path = xdeps_dir.join("Cargo.toml");
+        let existing = std::fs::read_to_string(&xdeps_toml_path).unwrap_or_default();
+        if existing != xdeps_toml {
+            std::fs::write(&xdeps_toml_path, &xdeps_toml)?;
+            eprintln!("[xtask] regenerated xdeps/Cargo.toml");
+        }
+
+        // Ensure lib.rs exists
+        let lib_rs = xdeps_dir.join("src").join("lib.rs");
+        if !lib_rs.exists() {
+            std::fs::write(&lib_rs, "// Auto-generated: ensures optional deps are compiled.\n")?;
+        }
+
+        eprintln!("[xtask] Phase 1: building xdeps for rlibs: {needed_externs:?}");
+
+        let xdeps_manifest = xdeps_dir.join("Cargo.toml");
+        let output = Command::new("cargo")
+            .args(["build", "--manifest-path", &xdeps_manifest.to_string_lossy(), "--message-format=json"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .current_dir(&root)
+            .output()
+            .context("failed to run cargo build for xdeps")?;
+
+        if !output.status.success() {
+            bail!("Phase 1 (build xdeps) failed");
+        }
+
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Ok(msg) = serde_json::from_str::<CargoMessage>(line) {
+                if msg.reason == "compiler-artifact" {
+                    if let (Some(target), Some(filenames)) = (msg.target, msg.filenames) {
+                        let name = target.name.replace('-', "_");
+                        if needed_externs.contains(&name) {
+                            if let Some(rlib) = filenames.iter().find(|f| f.ends_with(".rlib")) {
+                                rlib_paths.insert(name, rlib.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for ext in &needed_externs {
+            if !rlib_paths.contains_key(ext) {
+                bail!("rlib for extern `{ext}` not found after building xdeps");
+            }
+        }
+
+        eprintln!("[xtask] rlib paths: {rlib_paths:?}");
+    } else {
+        // No externs needed — write an empty target/xdeps/Cargo.toml
+        let xdeps_dir = root.join("target").join("xdeps");
+        std::fs::create_dir_all(xdeps_dir.join("src"))?;
+        let xdeps_toml = "# AUTO-GENERATED by xtask — do not edit manually\n\
+             [workspace]\n\
+             \n\
+             [package]\n\
+             name = \"xdeps\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             \n\
+             [dependencies]\n";
+        let xdeps_toml_path = xdeps_dir.join("Cargo.toml");
+        let existing = std::fs::read_to_string(&xdeps_toml_path).unwrap_or_default();
+        if existing != xdeps_toml {
+            std::fs::write(&xdeps_toml_path, xdeps_toml)?;
+        }
+        let lib_rs = xdeps_dir.join("src").join("lib.rs");
+        if !lib_rs.exists() {
+            std::fs::write(&lib_rs, "// Auto-generated: ensures optional deps are compiled.\n")?;
         }
     }
 
-    eprintln!("[xtask] feature injection map: {feature_map:?}");
-
-    // 3. Encode env vars
-    //    XCONFIG_FEATURES = crate_b:smp,feat2;crate_c:other  (for the wrapper)
-    //    RUSTFLAGS += --cfg xconfig="smp" ...                (for cargo cache tracking)
+    // 5. Encode env vars for the wrapper
     let features_env = feature_map
         .iter()
         .map(|(cn, fs)| format!("{cn}:{}", fs.join(",")))
         .collect::<Vec<_>>()
         .join(";");
 
-    // Build RUSTFLAGS: append xconfig cfgs to any existing value.
-    // Cargo tracks RUSTFLAGS for fingerprinting, so toggling an xconfig
-    // automatically invalidates the build cache.
+    let mut extern_entries = Vec::new();
+    for (crate_name, deps) in &extern_map {
+        for dep in deps {
+            if let Some(rlib_path) = rlib_paths.get(&dep.crate_name) {
+                extern_entries.push(format!("{crate_name}:{}={rlib_path}", dep.crate_name));
+            }
+        }
+    }
+    let externs_env = extern_entries.join(";");
+
+    // 6. Build RUSTFLAGS
     let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
     for c in &active {
-        rustflags.push_str(&format!(" --cfg=xconfig=\"{c}\""));
+        rustflags.push_str(&format!(" --cfg={}", c.to_uppercase()));
     }
-    // Encode feature-map hash so that metadata mapping changes also
-    // invalidate the cache.
-    if !features_env.is_empty() {
+    // --check-cfg for ALL known keys, not just active ones
+    for c in &all_keys {
+        rustflags.push_str(&format!(" --check-cfg=cfg({})", c.to_uppercase()));
+    }
+    if !features_env.is_empty() || !externs_env.is_empty() {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         features_env.hash(&mut hasher);
+        externs_env.hash(&mut hasher);
         let h = hasher.finish();
         rustflags.push_str(&format!(" --cfg=__xfp=\"{h:016x}\""));
     }
+    rustflags.push_str(" --check-cfg=cfg(__xfp,values(any()))");
     let rustflags = rustflags.trim().to_string();
 
-    // 4. The wrapper is this very binary – detected via __XCONFIG_WRAPPER env.
+    // 7. Phase 2: build/run with RUSTC_WRAPPER
     let wrapper = std::env::current_exe().context("locate xtask binary")?;
 
-    // 5. Forward remaining args to cargo
     let default_args: Vec<String> = vec!["build".into(), "-p".into(), "entry".into()];
     let args: &[String] = if cargo_args.is_empty() {
         &default_args
@@ -198,8 +204,8 @@ fn xtask_main() -> Result<()> {
         &cargo_args
     };
 
-    eprintln!("[xtask] RUSTFLAGS={rustflags}");
-    eprintln!("[xtask] running: cargo {}", args.join(" "));
+    eprintln!("[xtask] Phase 2: RUSTFLAGS={rustflags}");
+    eprintln!("[xtask] Phase 2: running cargo {}", args.join(" "));
 
     let status = Command::new("cargo")
         .args(args)
@@ -207,6 +213,7 @@ fn xtask_main() -> Result<()> {
         .env("__XCONFIG_WRAPPER", "1")
         .env("RUSTFLAGS", &rustflags)
         .env("XCONFIG_FEATURES", &features_env)
+        .env("XCONFIG_EXTERNS", &externs_env)
         .current_dir(&root)
         .status()
         .context("cargo failed")?;
@@ -220,9 +227,8 @@ fn xtask_main() -> Result<()> {
 // ── Entry point ──────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
-    // When cargo uses us as RUSTC_WRAPPER it sets __XCONFIG_WRAPPER.
     if std::env::var("__XCONFIG_WRAPPER").is_ok() {
-        wrapper_main()
+        wrapper::wrapper_main()
     } else {
         xtask_main()
     }

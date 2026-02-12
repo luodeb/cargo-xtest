@@ -5,3 +5,4 @@ exclude = []
 
 [workspace.dependencies]
 crate_a = { path = "crates/crate_a", default-features = false }
+crate_net = { path = "crates/crate_net" }
