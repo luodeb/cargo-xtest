@@ -8,7 +8,7 @@ edition = "2024"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xconfig, values("smp"))'] }
 
 [dependencies]
-crate_b = { workspace = true }
+crate_b = { workspace = true, default-features = false}
 
 [package.metadata.xconfig]
 smp = ["crate_b/smp"]

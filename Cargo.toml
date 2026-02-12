@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/crate_smp",
-    "entry",
-    "xtask",
-]
+members = ["entry"]
 exclude = []
 
 [workspace.dependencies]
