@@ -18,6 +18,13 @@ dependencies = [
 [[package]]
 name = "crate_b"
 version = "0.1.0"
+dependencies = [
+ "crate_smp",
+]
+
+[[package]]
+name = "crate_smp"
+version = "0.1.0"
 
 [[package]]
 name = "entry"

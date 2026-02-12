@@ -11,4 +11,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xconfig, values("smp"))'] 
 crate_b = { workspace = true }
 
 [package.metadata.xconfig]
-smp = ["smp", "crate_b/smp"]
+smp = ["crate_b/smp"]

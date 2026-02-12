@@ -65,6 +65,56 @@ fn parse_xconfig_mapping(crate_a_manifest: &toml::Value) -> BTreeMap<String, Vec
     mapping
 }
 
+fn feature_names(manifest: &toml::Value) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Some(features) = manifest.get("features") else {
+        return out;
+    };
+    let Some(table) = features.as_table() else {
+        return out;
+    };
+    out.extend(table.keys().cloned());
+    out
+}
+
+fn workspace_dep_paths(root_manifest: &toml::Value) -> BTreeMap<String, PathBuf> {
+    // Reads:
+    // [workspace.dependencies]
+    // crate_a = { path = "crates/crate_a" }
+    let mut out = BTreeMap::new();
+    let Some(workspace) = root_manifest.get("workspace") else {
+        return out;
+    };
+    let Some(deps) = workspace.get("dependencies") else {
+        return out;
+    };
+    let Some(table) = deps.as_table() else {
+        return out;
+    };
+
+    for (name, spec) in table {
+        if let Some(path) = spec.as_table().and_then(|t| t.get("path")).and_then(|v| v.as_str()) {
+            out.insert(name.clone(), PathBuf::from(path));
+        }
+    }
+
+    out
+}
+
+fn package_has_feature(
+    root: &Path,
+    root_manifest: &toml::Value,
+    pkg: &str,
+    feat: &str,
+) -> anyhow::Result<bool> {
+    let paths = workspace_dep_paths(root_manifest);
+    let Some(rel) = paths.get(pkg) else {
+        return Ok(false);
+    };
+    let manifest = read_toml(&root.join(rel).join("Cargo.toml"))?;
+    Ok(feature_names(&manifest).contains(feat))
+}
+
 fn direct_dependency_names(entry_manifest: &toml::Value) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let Some(deps) = entry_manifest.get("dependencies") else {
@@ -110,6 +160,7 @@ fn real_main() -> anyhow::Result<()> {
     }
 
     let root = workspace_root();
+    let root_manifest = read_toml(&root.join("Cargo.toml"))?;
     let config = read_toml(&root.join(".config.toml"))?;
     let enabled = config
         .get("xconfig")
@@ -118,6 +169,7 @@ fn real_main() -> anyhow::Result<()> {
 
     // Parse crate_a's mapping table for feature wiring.
     let crate_a_manifest = read_toml(&root.join("crates/crate_a/Cargo.toml"))?;
+    let crate_a_feature_names = feature_names(&crate_a_manifest);
     let mapping = parse_xconfig_mapping(&crate_a_manifest);
 
     // Cargo only lets us enable namespaced features for *direct dependencies* of the package
@@ -126,6 +178,8 @@ fn real_main() -> anyhow::Result<()> {
     let entry_direct_deps = direct_dependency_names(&entry_manifest);
 
     // Collect features to enable (namespaced) that `cargo run -p entry` can accept.
+    // Important: do not invent new features. Only enable features that are declared in the
+    // target crate's manifest.
     let mut pkgs_to_select: BTreeSet<String> = BTreeSet::new();
     let mut namespaced_features: BTreeSet<String> = BTreeSet::new();
 
@@ -134,13 +188,17 @@ fn real_main() -> anyhow::Result<()> {
             for item in items {
                 if let Some((pkg, feat)) = split_pkg_feature(item) {
                     // Only allow features for entry's direct dependencies.
-                    if entry_direct_deps.contains(pkg) {
+                    if entry_direct_deps.contains(pkg)
+                        && package_has_feature(&root, &root_manifest, pkg, feat)?
+                    {
                         pkgs_to_select.insert(pkg.to_string());
                         namespaced_features.insert(format!("{pkg}/{feat}"));
                     }
                 } else {
                     // Bare feature name: assume it's a crate_a feature.
-                    if entry_direct_deps.contains("crate_a") {
+                    if entry_direct_deps.contains("crate_a")
+                        && crate_a_feature_names.contains(item)
+                    {
                         pkgs_to_select.insert("crate_a".to_string());
                         namespaced_features.insert(format!("crate_a/{item}"));
                     }
