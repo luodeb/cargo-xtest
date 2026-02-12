@@ -1,0 +1,13 @@
+[package]
+name = "crate_a"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+smp = ["dep:crate_b"]
+
+[dependencies]
+crate_b = { workspace = true, optional = true }
+
+[package.metadata.xconfig]
+smp = ["smp", "crate_b/smp"]

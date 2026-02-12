@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "entry",
+]
+exclude = []
+
+[workspace.dependencies]
+crate_a = { path = "crates/crate_a" }
+crate_b = { path = "crates/crate_b" }
