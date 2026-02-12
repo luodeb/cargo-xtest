@@ -1,9 +1,0 @@
-[package]
-name = "crate_smp"
-version = "0.1.0"
-edition = "2024"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xconfig, values("smp"))', 'cfg(__xfp, values(any()))'] }
-
-[dependencies]
