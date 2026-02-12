@@ -179,6 +179,7 @@ fn xbuild_main() -> Result<()> {
 
     // Sync .cargo/config.toml for rust-analyzer (after Phase 1 so we have rlib_paths)
     config::sync_cargo_config(&root, &active, &all_keys, &rlib_paths)?;
+    config::sync_vscode_settings(&root, &active, &feature_map)?;
 
     // 5. Encode env vars for the wrapper
     let features_env = feature_map

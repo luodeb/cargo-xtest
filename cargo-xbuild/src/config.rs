@@ -268,3 +268,42 @@ pub fn sync_cargo_config(
     }
     Ok(())
 }
+
+/// Regenerate `.vscode/settings.json` so rust-analyzer picks up xconfig cfgs
+/// and feature activation inferred from `[package.metadata.xconfig]`.
+pub fn sync_vscode_settings(
+    root: &Path,
+    active: &[String],
+    feature_map: &HashMap<String, Vec<String>>,
+) -> Result<()> {
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    let cfgs = active
+        .iter()
+        .map(|c| c.to_uppercase())
+        .collect::<Vec<_>>();
+
+    let mut features = BTreeSet::new();
+    for (crate_name, feats) in feature_map {
+        for feat in feats {
+            features.insert(format!("{crate_name}/{feat}"));
+        }
+    }
+
+    let settings = json!({
+        "rust-analyzer.cargo.features": features.into_iter().collect::<Vec<_>>(),
+        "rust-analyzer.cargo.cfgs": cfgs,
+    });
+
+    let content = serde_json::to_string_pretty(&settings)? + "\n";
+    let settings_path = root.join(".vscode").join("settings.json");
+    let existing = std::fs::read_to_string(&settings_path).unwrap_or_default();
+    if existing != content {
+        std::fs::create_dir_all(root.join(".vscode"))?;
+        std::fs::write(&settings_path, content)?;
+        eprintln!("[xbuild] synced .vscode/settings.json");
+    }
+
+    Ok(())
+}
