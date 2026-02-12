@@ -4,6 +4,6 @@ members = ["entry"]
 exclude = []
 
 [workspace.dependencies]
-crate_a = { path = "crates/crate_a" }
-crate_b = { path = "crates/crate_b" }
-crate_smp = { path = "crates/crate_smp" }
+crate_a = { path = "crates/crate_a", default-features = false }
+crate_b = { path = "crates/crate_b", default-features = false }
+crate_smp = { path = "crates/crate_smp", default-features = false }
