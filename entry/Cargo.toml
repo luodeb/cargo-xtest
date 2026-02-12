@@ -5,7 +5,7 @@ edition = "2024"
 
 [lints.rust]
 # Declare our custom cfg so `#[cfg(xconfig = "...")]` doesn't trigger `unexpected_cfgs`.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xconfig, values("smp"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xconfig, values("smp"))', 'cfg(__xfp, values(any()))'] }
 
 [dependencies]
 crate_a = { workspace = true }
