@@ -1,10 +1,34 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// `.config.toml` schema
+/// `defconfig.toml` schema — defines all xconfig keys with metadata.
+#[derive(Deserialize)]
+pub struct DefConfig {
+    pub xconfig: Option<HashMap<String, XConfigDef>>,
+}
+
+/// A single xconfig definition entry in `defconfig.toml`.
+#[derive(Deserialize, Clone)]
+pub struct XConfigDef {
+    /// Human-readable description of this config switch
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Value type (currently only "bool"), reserved for future extension
+    #[serde(rename = "type", default = "default_type")]
+    pub typ: String,
+    /// Default value when generating .config.toml
+    #[serde(default)]
+    pub default: bool,
+}
+
+fn default_type() -> String {
+    "bool".to_string()
+}
+
+/// `.config.toml` schema — uses `toml::Value` for type validation.
 #[derive(Deserialize)]
 pub struct ProjectConfig {
-    pub xconfig: Option<HashMap<String, bool>>,
+    pub xconfig: Option<HashMap<String, toml::Value>>,
 }
 
 /// Partial `Cargo.toml` – for reading `[package.metadata.xconfig]`

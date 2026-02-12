@@ -1,0 +1,12 @@
+# xconfig definitions — describes all available configuration switches.
+# cargo-xbuild uses this to auto-generate .config.toml when it doesn't exist.
+
+[xconfig.smp]
+description = "Enable SMP (Symmetric Multi-Processing) support"
+type = "bool"
+default = false
+
+[xconfig.net]
+description = "Enable network support"
+type = "bool"
+default = false

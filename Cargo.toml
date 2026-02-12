@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["entry", "xtask"]
+members = ["entry", "cargo-xbuild"]
 exclude = []
 
 [workspace.dependencies]
