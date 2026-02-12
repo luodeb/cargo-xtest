@@ -3,11 +3,12 @@ name = "crate_a"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-smp = ["dep:crate_b"]
+[lints.rust]
+# Declare our custom cfg so `#[cfg(xconfig = "...")]` doesn't trigger `unexpected_cfgs`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(xconfig, values("smp"))'] }
 
 [dependencies]
-crate_b = { workspace = true, optional = true }
+crate_b = { workspace = true }
 
 [package.metadata.xconfig]
 smp = ["smp", "crate_b/smp"]
