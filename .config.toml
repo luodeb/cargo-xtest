@@ -1,2 +1,3 @@
 [xconfig]
-smp = false
+smp = true
+net = false

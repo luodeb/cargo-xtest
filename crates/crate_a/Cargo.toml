@@ -5,11 +5,13 @@ edition = "2024"
 
 [features]
 net = ["dep:crate_net"]
+smp = ["dep:bitflags"]
 
 [dependencies]
 crate_b = { git = "https://github.com/luodeb/crate_b.git", default-features = false}
 crate_net = { workspace = true, optional = true }
+bitflags = { version = "2", optional = true }
 
 [package.metadata.xconfig]
-smp = ["crate_b/smp"]
+smp = ["smp", "crate_b/smp"]
 net = ["net"]

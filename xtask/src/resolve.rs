@@ -98,12 +98,23 @@ fn resolve_extern_map_from_metadata(
                         let url = url.split('#').next().unwrap_or(url);
                         DepSource::Git(url.to_string())
                     } else {
-                        DepSource::Registry
+                        // crates.io registry dep — carry version/features/default_features
+                        let version = d.req.clone().unwrap_or_else(|| "*".to_string());
+                        DepSource::Registry {
+                            version,
+                            features: d.features.clone(),
+                            default_features: d.uses_default_features,
+                        }
                     }
                 } else if let Some(path) = &d.path {
                     DepSource::Path(path.clone())
                 } else {
-                    DepSource::Registry
+                    let version = d.req.clone().unwrap_or_else(|| "*".to_string());
+                    DepSource::Registry {
+                        version,
+                        features: d.features.clone(),
+                        default_features: d.uses_default_features,
+                    }
                 };
                 (d.name.clone(), source)
             })
@@ -117,7 +128,11 @@ fn resolve_extern_map_from_metadata(
                         let source = dep_source_lookup
                             .get(dep_name)
                             .cloned()
-                            .unwrap_or(DepSource::Registry);
+                            .unwrap_or(DepSource::Registry {
+                                version: "*".to_string(),
+                                features: vec![],
+                                default_features: true,
+                            });
                         extern_map.entry(crate_name.clone()).or_default().push(
                             ExternDep {
                                 crate_name: normalized,

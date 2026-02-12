@@ -69,6 +69,19 @@ pub struct MetadataDep {
     pub optional: bool,
     #[serde(default)]
     pub path: Option<String>,
+    /// Version requirement string, e.g. "^1.0"
+    #[serde(default)]
+    pub req: Option<String>,
+    /// Features enabled on this dep
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Whether default features are used (defaults to true)
+    #[serde(default = "default_true")]
+    pub uses_default_features: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Info about an optional dep that needs extern injection.
@@ -86,5 +99,9 @@ pub struct ExternDep {
 pub enum DepSource {
     Git(String),
     Path(String),
-    Registry,
+    Registry {
+        version: String,
+        features: Vec<String>,
+        default_features: bool,
+    },
 }

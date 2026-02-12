@@ -20,14 +20,11 @@ fn xtask_main() -> Result<()> {
     let (active, all_keys) = config::load_active_xconfigs(&root)?;
     eprintln!("[xtask] active xconfigs: {active:?}");
 
-    // 1b. Sync .cargo/config.toml for rust-analyzer
-    config::sync_cargo_config(&root, &active, &all_keys)?;
-
     // 2. Collect [package.metadata.xconfig] → feature_map
     let feature_map = config::collect_all_metadata(&root, &active)?;
     eprintln!("[xtask] feature injection: {feature_map:?}");
 
-    // 3. Auto-resolve extern injection
+    // 3. Auto-resolve extern injection for all features
     let extern_map = resolve::resolve_extern_map(&root, &feature_map)?;
 
     eprintln!("[xtask] extern injection (auto-resolved): {extern_map:?}");
@@ -62,7 +59,20 @@ fn xtask_main() -> Result<()> {
                 let spec = match &dep.source {
                     DepSource::Git(url) => format!("{} = {{ git = \"{}\" }}", dep.pkg_name, url),
                     DepSource::Path(p) => format!("{} = {{ path = \"{}\" }}", dep.pkg_name, p),
-                    DepSource::Registry => format!("{} = \"*\"", dep.pkg_name),
+                    DepSource::Registry { version, features, default_features } => {
+                        let mut parts = vec![format!("version = \"{}\"", version)];
+                        if !features.is_empty() {
+                            let feat_list = features.iter()
+                                .map(|f| format!("\"{}\"", f))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            parts.push(format!("features = [{}]", feat_list));
+                        }
+                        if !default_features {
+                            parts.push("default-features = false".to_string());
+                        }
+                        format!("{} = {{ {} }}", dep.pkg_name, parts.join(", "))
+                    }
                 };
                 dep_lines.push(spec);
             }
@@ -157,6 +167,9 @@ fn xtask_main() -> Result<()> {
         }
     }
 
+    // Sync .cargo/config.toml for rust-analyzer (after Phase 1 so we have rlib_paths)
+    config::sync_cargo_config(&root, &active, &all_keys, &rlib_paths)?;
+
     // 5. Encode env vars for the wrapper
     let features_env = feature_map
         .iter()
@@ -183,6 +196,12 @@ fn xtask_main() -> Result<()> {
     for c in &all_keys {
         rustflags.push_str(&format!(" --check-cfg=cfg({})", c.to_uppercase()));
     }
+    // Add xdeps deps dir to search path so transitive deps can find extern rlibs
+    if let Some(first_rlib) = rlib_paths.values().next() {
+        if let Some(deps_dir) = std::path::Path::new(first_rlib).parent() {
+            rustflags.push_str(&format!(" -Ldependency={}", deps_dir.display()));
+        }
+    }
     if !features_env.is_empty() || !externs_env.is_empty() {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -207,8 +226,9 @@ fn xtask_main() -> Result<()> {
     eprintln!("[xtask] Phase 2: RUSTFLAGS={rustflags}");
     eprintln!("[xtask] Phase 2: running cargo {}", args.join(" "));
 
-    let status = Command::new("cargo")
-        .args(args)
+    let mut cmd = Command::new("cargo");
+    cmd.args(args);
+    let status = cmd
         .env("RUSTC_WRAPPER", &wrapper)
         .env("__XCONFIG_WRAPPER", "1")
         .env("RUSTFLAGS", &rustflags)

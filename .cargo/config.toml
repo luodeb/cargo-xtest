@@ -5,4 +5,12 @@
 xtask = "run -p xtask --"
 
 [build]
-rustflags = ["--check-cfg=cfg(SMP)", "--check-cfg=cfg(__xfp,values(any()))"]
+rustflags = [
+    "--cfg=SMP", 
+    "--check-cfg=cfg(NET)", 
+    "--check-cfg=cfg(SMP)", 
+    "--check-cfg=cfg(__xfp,values(any()))", 
+    "--extern=crate_smp=/Users/debin/Desktop/Codes/tmp/cargo-xtest/target/xdeps/target/debug/deps/libcrate_smp-5f58f70f15fb2979.rlib", 
+    "--extern=bitflags=/Users/debin/Desktop/Codes/tmp/cargo-xtest/target/xdeps/target/debug/deps/libbitflags-fbe7859caeaff979.rlib", 
+    "-Ldependency=/Users/debin/Desktop/Codes/tmp/cargo-xtest/target/xdeps/target/debug/deps"
+]
